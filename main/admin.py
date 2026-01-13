@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.html import mark_safe
 from django.contrib.auth.models import User, Group
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin, GroupAdmin as BaseGroupAdmin
-from .models import Building, Expense
+from .models import Building, Expense, ExpenseCategory
 
 
 # User va Group ni qayta ro'yxatdan o'tkazish
@@ -106,6 +106,36 @@ class BuildingAdmin(admin.ModelAdmin):
     expenses_count.short_description = 'Chiqimlar'
 
 
+@admin.register(ExpenseCategory)
+class ExpenseCategoryAdmin(admin.ModelAdmin):
+    list_display = ['id', 'name', 'slug', 'colored_icon', 'order', 'is_active', 'expenses_count', 'created_at']
+    list_filter = ['is_active']
+    search_fields = ['name', 'slug']
+    list_editable = ['order', 'is_active']
+    list_per_page = 25
+    prepopulated_fields = {'slug': ('name',)}
+    
+    fieldsets = (
+        ("Asosiy ma'lumotlar", {
+            'fields': ('name', 'slug', 'order', 'is_active')
+        }),
+        ("Ko'rinish", {
+            'fields': ('icon', 'color')
+        }),
+    )
+    
+    def colored_icon(self, obj):
+        if obj.icon:
+            return mark_safe(f'<span style="padding: 3px 8px; border-radius: 4px; font-size: 12px;" class="{obj.color}">{obj.icon}</span>')
+        return '-'
+    colored_icon.short_description = 'Icon'
+    
+    def expenses_count(self, obj):
+        count = obj.expenses.count()
+        return mark_safe(f'<a href="/admin/main/expense/?category__id__exact={obj.id}">{count} ta</a>')
+    expenses_count.short_description = 'Chiqimlar'
+
+
 @admin.register(Expense)
 class ExpenseAdmin(admin.ModelAdmin):
     list_display = [
@@ -136,16 +166,9 @@ class ExpenseAdmin(admin.ModelAdmin):
     building_link.short_description = 'Bino'
     
     def colored_category(self, obj):
-        colors = {
-            'material': '#3498db',
-            'labor': '#9b59b6',
-            'transport': '#1abc9c',
-            'equipment': '#e67e22',
-            'other': '#95a5a6'
-        }
-        color = colors.get(obj.category, '#95a5a6')
-        cat_text = obj.get_category_display()
-        return mark_safe(f'<span style="background-color: {color}; color: white; padding: 3px 10px; border-radius: 3px;">{cat_text}</span>')
+        if obj.category:
+            return mark_safe(f'<span style="padding: 3px 10px; border-radius: 3px;" class="{obj.category.color}">{obj.category.name}</span>')
+        return '-'
     colored_category.short_description = 'Kategoriya'
     
     def formatted_amount(self, obj):

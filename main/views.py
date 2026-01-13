@@ -4,19 +4,19 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth.models import User, Group
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Avg, Max, Min
 from django.db.models.functions import TruncWeek, TruncMonth
 from django.utils import timezone
 from datetime import timedelta
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter, OpenApiExample
 from drf_spectacular.types import OpenApiTypes
 
-from .models import Building, Expense
+from .models import Building, Expense, ExpenseCategory
 from .serializers import (
     UserSerializer, UserCreateSerializer,
     BuildingListSerializer, BuildingDetailSerializer, BuildingCreateUpdateSerializer,
     ExpenseListSerializer, ExpenseDetailSerializer, ExpenseCreateUpdateSerializer,
-    ExpenseStatisticsSerializer
+    ExpenseStatisticsSerializer, ExpenseCategorySerializer
 )
 from .permissions import (
     IsAdmin, IsAdminOrAccountant, IsAdminOrAccountantOrReadOnly, 
@@ -100,6 +100,59 @@ class UserViewSet(viewsets.ModelViewSet):
         """Joriy foydalanuvchi ma'lumotlarini olish"""
         serializer = UserSerializer(request.user)
         return Response(serializer.data)
+
+
+@extend_schema_view(
+    list=extend_schema(
+        summary="Kategoriyalar ro'yxati",
+        description="Barcha chiqim kategoriyalarini ko'rish.",
+        tags=['Kategoriyalar']
+    ),
+    retrieve=extend_schema(
+        summary="Kategoriya tafsilotlari",
+        description="Bitta kategoriyaning to'liq ma'lumotlarini ko'rish.",
+        tags=['Kategoriyalar']
+    ),
+    create=extend_schema(
+        summary="Yangi kategoriya qo'shish",
+        description="Yangi chiqim kategoriyasini tizimga qo'shish.",
+        tags=['Kategoriyalar']
+    ),
+    update=extend_schema(
+        summary="Kategoriyani yangilash",
+        description="Kategoriya ma'lumotlarini to'liq yangilash.",
+        tags=['Kategoriyalar']
+    ),
+    partial_update=extend_schema(
+        summary="Kategoriyani qisman yangilash",
+        description="Kategoriya ma'lumotlarini qisman yangilash.",
+        tags=['Kategoriyalar']
+    ),
+    destroy=extend_schema(
+        summary="Kategoriyani o'chirish",
+        description="Kategoriyani tizimdan o'chirish. Diqqat: Faqat foydalanilmagan kategoriyalarni o'chirish mumkin!",
+        tags=['Kategoriyalar']
+    )
+)
+class ExpenseCategoryViewSet(viewsets.ModelViewSet):
+    """
+    Chiqim kategoriyalari bilan ishlash uchun API
+    
+    Kategoriyalarni boshqarish: ko'rish, qo'shish, tahrirlash, o'chirish.
+    """
+    queryset = ExpenseCategory.objects.all()
+    serializer_class = ExpenseCategorySerializer
+    permission_classes = [IsAuthenticated, IsAdminOrAccountantOrReadOnly]
+    
+    def get_queryset(self):
+        queryset = ExpenseCategory.objects.all()
+        
+        # Faqat faol kategoriyalarni ko'rsatish (agar so'ralsa)
+        active_only = self.request.query_params.get('active_only')
+        if active_only and active_only.lower() == 'true':
+            queryset = queryset.filter(is_active=True)
+        
+        return queryset
 
 
 @extend_schema_view(
@@ -202,8 +255,22 @@ class BuildingViewSet(viewsets.ModelViewSet):
     
     @extend_schema(
         summary="Bino statistikasi",
-        description="Tanlangan bino bo'yicha chiqimlar statistikasi.",
-        tags=['Binolar']
+        description="""
+        Tanlangan bino bo'yicha chiqimlar statistikasi.
+        
+        **Filterlar:**
+        - `date_from` - Boshlanish sanasi (YYYY-MM-DD)
+        - `date_to` - Tugash sanasi (YYYY-MM-DD)
+        - `category` - Kategoriya ID
+        - `created_by` - Foydalanuvchi ID (faqat admin)
+        """,
+        tags=['Binolar'],
+        parameters=[
+            OpenApiParameter(name='date_from', type=str, description='Boshlanish sanasi (YYYY-MM-DD)'),
+            OpenApiParameter(name='date_to', type=str, description='Tugash sanasi (YYYY-MM-DD)'),
+            OpenApiParameter(name='category', type=int, description='Kategoriya ID'),
+            OpenApiParameter(name='created_by', type=int, description='Foydalanuvchi ID (faqat admin)'),
+        ]
     )
     @action(detail=True, methods=['get'])
     def statistics(self, request, pk=None):
@@ -212,22 +279,122 @@ class BuildingViewSet(viewsets.ModelViewSet):
         
         # Chiqimlar statistikasi
         expenses = building.expenses.all()
-        total_expenses = expenses.aggregate(total=Sum('amount'))['total'] or 0
+        
+        # Filterlarni qo'llash
+        date_from = request.query_params.get('date_from')
+        if date_from:
+            expenses = expenses.filter(date__gte=date_from)
+        
+        date_to = request.query_params.get('date_to')
+        if date_to:
+            expenses = expenses.filter(date__lte=date_to)
+        
+        category = request.query_params.get('category')
+        if category:
+            expenses = expenses.filter(category_id=category)
+        
+        created_by = request.query_params.get('created_by')
+        if created_by and request.user.username == CEO_ADMIN_USERNAME:
+            expenses = expenses.filter(created_by_id=created_by)
+        
+        # Umumiy statistikalar
+        stats = expenses.aggregate(
+            total=Sum('amount'),
+            count=Count('id'),
+            avg=Avg('amount'),
+            max_amount=Max('amount')
+        )
+        total_expenses = stats['total'] or 0
+        expenses_count = stats['count'] or 0
+        avg_expense = stats['avg'] or 0
+        max_expense = stats['max_amount'] or 0
         
         # Kategoriya bo'yicha
         by_category = {}
-        for cat in Expense.Category.choices:
-            amount = expenses.filter(category=cat[0]).aggregate(total=Sum('amount'))['total'] or 0
-            by_category[cat[1]] = float(amount)
+        for cat in ExpenseCategory.objects.all():
+            amount = expenses.filter(category=cat).aggregate(total=Sum('amount'))['total'] or 0
+            by_category[cat.name] = float(amount)
+        
+        # Top foydalanuvchilar (faqat admin uchun)
+        top_users = []
+        if request.user.username == CEO_ADMIN_USERNAME:
+            top_users = list(
+                expenses.values('created_by__username', 'created_by_id')
+                .annotate(total=Sum('amount'), count=Count('id'))
+                .order_by('-total')[:10]
+            )
+        
+        # Kunlik chiqimlar (so'nggi 30 kun)
+        thirty_days_ago = timezone.now().date() - timedelta(days=30)
+        daily_expenses = list(
+            expenses.filter(date__gte=thirty_days_ago)
+            .values('date')
+            .annotate(total=Sum('amount'), count=Count('id'))
+            .order_by('date')
+        )
+        
+        # Oylik chiqimlar (so'nggi 12 oy)
+        twelve_months_ago = timezone.now().date() - timedelta(days=365)
+        monthly_expenses = list(
+            expenses.filter(date__gte=twelve_months_ago)
+            .annotate(month=TruncMonth('date'))
+            .values('month')
+            .annotate(total=Sum('amount'))
+            .order_by('month')
+        )
+        
+        # Format monthly data
+        monthly_data = []
+        for item in monthly_expenses:
+            if item['month']:
+                monthly_data.append({
+                    'month': item['month'].strftime('%Y-%m'),
+                    'month_name': item['month'].strftime('%B %Y'),
+                    'total': float(item['total'] or 0)
+                })
+        
+        # So'nggi chiqimlar
+        recent_expenses = list(
+            expenses.select_related('category', 'created_by')
+            .order_by('-date', '-created_at')[:10]
+            .values(
+                'id', 'description', 'amount', 'date',
+                'category__name', 'category__icon', 'category__color',
+                'created_by__username'
+            )
+        )
+        
+        # Format recent expenses
+        formatted_recent = []
+        for exp in recent_expenses:
+            formatted_recent.append({
+                'id': exp['id'],
+                'description': exp['description'],
+                'amount': float(exp['amount']),
+                'date': exp['date'].isoformat() if exp['date'] else None,
+                'category': exp['category__name'] or 'Boshqa',
+                'category_icon': exp['category__icon'] or 'MoreHorizontal',
+                'category_color': exp['category__color'] or 'text-slate-400 bg-slate-500/20 border-slate-500/30',
+                'created_by': exp['created_by__username'] or 'Noma\'lum'
+            })
         
         return Response({
             'building_name': building.name,
+            'building_status': building.status,
+            'building_description': building.description,
+            'start_date': building.start_date.isoformat() if building.start_date else None,
             'budget': float(building.budget),
             'spent_amount': float(building.spent_amount),
             'remaining_budget': float(building.remaining_budget),
             'total_expenses': float(total_expenses),
+            'expenses_count': expenses_count,
+            'average_expense': float(avg_expense),
+            'max_expense': float(max_expense),
             'expenses_by_category': by_category,
-            'expenses_count': expenses.count()
+            'top_users': top_users,
+            'daily_expenses': daily_expenses,
+            'monthly_expenses': monthly_data,
+            'recent_expenses': formatted_recent
         })
 
 
@@ -239,7 +406,7 @@ class BuildingViewSet(viewsets.ModelViewSet):
         
         **Filtrlash imkoniyatlari:**
         - `building`: Bino ID si bo'yicha
-        - `category`: Kategoriya bo'yicha (material, labor, transport, equipment, other)
+        - `category`: Kategoriya ID si bo'yicha (/api/expense-categories/ dan oling)
         - `date_from`: Sanadan boshlab
         - `date_to`: Sanagacha
         - `created_by`: Foydalanuvchi ID si bo'yicha (faqat ceoadmin uchun)
@@ -255,9 +422,9 @@ class BuildingViewSet(viewsets.ModelViewSet):
             ),
             OpenApiParameter(
                 name='category',
-                type=OpenApiTypes.STR,
+                type=OpenApiTypes.INT,
                 location=OpenApiParameter.QUERY,
-                description="Kategoriya: material, labor, transport, equipment, other",
+                description="Kategoriya ID si (/api/expense-categories/ dan oling)",
                 required=False
             ),
             OpenApiParameter(
@@ -297,11 +464,12 @@ class BuildingViewSet(viewsets.ModelViewSet):
                 'Yangi chiqim',
                 value={
                     'building': 1,
-                    'category': 'material',
+                    'category': 1,
                     'description': 'Sement sotib olish',
                     'amount': 15000000,
                     'date': '2024-01-15'
-                }
+                },
+                description='category - kategoriya ID si (ixtiyoriy), date - sana (ixtiyoriy, default: bugun)'
             )
         ]
     ),
@@ -375,13 +543,29 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         description="""
         Umumiy chiqimlar statistikasini olish.
         
+        **Filterlar:**
+        - `date_from` - Boshlanish sanasi (YYYY-MM-DD)
+        - `date_to` - Tugash sanasi (YYYY-MM-DD)
+        - `building` - Bino ID
+        - `category` - Kategoriya ID
+        - `created_by` - Foydalanuvchi ID (faqat admin)
+        
         **Ma'lumotlar:**
         - Umumiy chiqimlar summasi
         - Kategoriyalar bo'yicha taqsimot
         - Binolar bo'yicha taqsimot
         - Haftalik va oylik hisobotlar
+        - Kunlik hisobot (so'nggi 30 kun)
+        - Top foydalanuvchilar
         """,
         tags=['Chiqimlar'],
+        parameters=[
+            OpenApiParameter(name='date_from', type=str, description='Boshlanish sanasi (YYYY-MM-DD)'),
+            OpenApiParameter(name='date_to', type=str, description='Tugash sanasi (YYYY-MM-DD)'),
+            OpenApiParameter(name='building', type=int, description='Bino ID'),
+            OpenApiParameter(name='category', type=int, description='Kategoriya ID'),
+            OpenApiParameter(name='created_by', type=int, description='Foydalanuvchi ID (faqat admin)'),
+        ],
         responses={200: ExpenseStatisticsSerializer}
     )
     @action(detail=False, methods=['get'])
@@ -389,20 +573,70 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         """Umumiy chiqimlar statistikasi"""
         expenses = Expense.objects.all()
         
-        # Umumiy chiqimlar
-        total_expenses = expenses.aggregate(total=Sum('amount'))['total'] or 0
+        # Filterlarni qo'llash
+        date_from = request.query_params.get('date_from')
+        if date_from:
+            expenses = expenses.filter(date__gte=date_from)
+        
+        date_to = request.query_params.get('date_to')
+        if date_to:
+            expenses = expenses.filter(date__lte=date_to)
+        
+        building = request.query_params.get('building')
+        if building:
+            expenses = expenses.filter(building_id=building)
+        
+        category = request.query_params.get('category')
+        if category:
+            expenses = expenses.filter(category_id=category)
+        
+        created_by = request.query_params.get('created_by')
+        if created_by and request.user.username == CEO_ADMIN_USERNAME:
+            expenses = expenses.filter(created_by_id=created_by)
+        
+        # Umumiy statistikalar
+        stats = expenses.aggregate(
+            total=Sum('amount'),
+            count=Count('id'),
+            avg=Avg('amount'),
+            max_amount=Max('amount'),
+            min_amount=Min('amount')
+        )
+        total_expenses = stats['total'] or 0
+        expenses_count = stats['count'] or 0
+        avg_expense = stats['avg'] or 0
+        max_expense = stats['max_amount'] or 0
+        min_expense = stats['min_amount'] or 0
         
         # Kategoriya bo'yicha
         expenses_by_category = {}
-        for cat in Expense.Category.choices:
-            amount = expenses.filter(category=cat[0]).aggregate(total=Sum('amount'))['total'] or 0
-            expenses_by_category[cat[1]] = float(amount)
+        for cat in ExpenseCategory.objects.all():
+            amount = expenses.filter(category=cat).aggregate(total=Sum('amount'))['total'] or 0
+            expenses_by_category[cat.name] = float(amount)
         
         # Binolar bo'yicha
         expenses_by_building = list(
-            expenses.values('building__name')
+            expenses.values('building__name', 'building_id')
             .annotate(total=Sum('amount'), count=Count('id'))
             .order_by('-total')[:10]
+        )
+        
+        # Top foydalanuvchilar (faqat admin uchun)
+        top_users = []
+        if request.user.username == CEO_ADMIN_USERNAME:
+            top_users = list(
+                expenses.values('created_by__username', 'created_by_id')
+                .annotate(total=Sum('amount'), count=Count('id'))
+                .order_by('-total')[:10]
+            )
+        
+        # Kunlik (so'nggi 30 kun)
+        thirty_days_ago = timezone.now().date() - timedelta(days=30)
+        daily_expenses = list(
+            expenses.filter(date__gte=thirty_days_ago)
+            .values('date')
+            .annotate(total=Sum('amount'), count=Count('id'))
+            .order_by('date')
         )
         
         # Haftalik (oxirgi 8 hafta)
@@ -427,8 +661,14 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         
         return Response({
             'total_expenses': float(total_expenses),
+            'expenses_count': expenses_count,
+            'average_expense': float(avg_expense),
+            'max_expense': float(max_expense),
+            'min_expense': float(min_expense),
             'expenses_by_category': expenses_by_category,
             'expenses_by_building': expenses_by_building,
+            'top_users': top_users,
+            'daily_expenses': daily_expenses,
             'weekly_expenses': weekly_expenses,
             'monthly_expenses': monthly_expenses
         })
@@ -496,10 +736,14 @@ class DashboardStatisticsView(APIView):
         
         # So'nggi 5 ta chiqim
         recent_expenses = list(
-            Expense.objects.select_related('building').order_by('-created_at')[:5].values(
-                'id', 'description', 'amount', 'category', 'date', 'building__name'
+            Expense.objects.select_related('building', 'category').order_by('-created_at')[:5].values(
+                'id', 'description', 'amount', 'category__name', 'date', 'building__name'
             )
         )
+        
+        # category__name ni category ga o'zgartirish (frontend uchun)
+        for expense in recent_expenses:
+            expense['category'] = expense.pop('category__name', 'Boshqa')
         
         return Response({
             # Umumiy ko'rsatkichlar
@@ -653,9 +897,9 @@ class MonthlyReportView(APIView):
         
         # Kategoriya bo'yicha
         by_category = {}
-        for cat in Expense.Category.choices:
-            amount = monthly_expenses.filter(category=cat[0]).aggregate(total=Sum('amount'))['total'] or 0
-            by_category[cat[1]] = float(amount)
+        for cat in ExpenseCategory.objects.all():
+            amount = monthly_expenses.filter(category=cat).aggregate(total=Sum('amount'))['total'] or 0
+            by_category[cat.name] = float(amount)
         
         # Binolar bo'yicha
         by_building = list(

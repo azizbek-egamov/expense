@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
 
 
 class Building(models.Model):
@@ -80,6 +81,61 @@ class Building(models.Model):
         return self.budget - self.spent_amount
 
 
+class ExpenseCategory(models.Model):
+    """
+    Chiqim kategoriyasi modeli
+    
+    Dinamik kategoriyalarni boshqarish uchun model.
+    """
+    name = models.CharField(
+        max_length=100,
+        verbose_name="Kategoriya nomi",
+        help_text="Kategoriya nomi (masalan: Materiallar, Ish haqi)"
+    )
+    slug = models.SlugField(
+        max_length=50,
+        unique=True,
+        verbose_name="Slug",
+        help_text="URL-friendly identifikator (masalan: material, labor)"
+    )
+    icon = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        verbose_name="Icon nomi",
+        help_text="Lucide icon nomi (masalan: Package, Users)"
+    )
+    color = models.CharField(
+        max_length=100,
+        blank=True,
+        default="text-slate-400 bg-slate-500/20 border-slate-500/30",
+        verbose_name="Rang klassi",
+        help_text="Tailwind CSS rang klasslari"
+    )
+    order = models.PositiveIntegerField(
+        default=0,
+        verbose_name="Tartib",
+        help_text="Ko'rsatish tartibi (kichik raqam birinchi)"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name="Faolmi",
+        help_text="Kategoriya faol holatda (tanlash uchun ko'rinadi)"
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name="Yaratilgan vaqt"
+    )
+    
+    class Meta:
+        verbose_name = "Chiqim kategoriyasi"
+        verbose_name_plural = "Chiqim kategoriyalari"
+        ordering = ['order', 'name']
+    
+    def __str__(self):
+        return self.name
+
+
 class Expense(models.Model):
     """
     Chiqim modeli - xarajatlar
@@ -87,7 +143,8 @@ class Expense(models.Model):
     Bu model binolar bo'yicha xarajatlarni kuzatish uchun ishlatiladi.
     """
     
-    class Category(models.TextChoices):
+    # Eski TextChoices - faqat data migration uchun, keyinchalik o'chiriladi
+    class LegacyCategory(models.TextChoices):
         MATERIAL = 'material', 'Material'
         LABOR = 'labor', 'Ish haqi'
         TRANSPORT = 'transport', 'Transport'
@@ -101,12 +158,23 @@ class Expense(models.Model):
         verbose_name="Bino",
         help_text="Chiqim qaysi binoga tegishli"
     )
-    category = models.CharField(
-        max_length=20,
-        choices=Category.choices,
-        default=Category.OTHER,
+    category = models.ForeignKey(
+        ExpenseCategory,
+        on_delete=models.PROTECT,
+        related_name='expenses',
         verbose_name="Kategoriya",
-        help_text="Chiqim turi"
+        help_text="Chiqim turi",
+        null=True,  # Vaqtincha null - migration uchun
+        blank=True
+    )
+    # Eski kategoriya maydoni - migration uchun
+    legacy_category = models.CharField(
+        max_length=20,
+        choices=LegacyCategory.choices,
+        default=LegacyCategory.OTHER,
+        verbose_name="Eski kategoriya",
+        help_text="Eski kategoriya (migration uchun)",
+        blank=True
     )
     description = models.CharField(
         max_length=500,
@@ -121,7 +189,8 @@ class Expense(models.Model):
     )
     date = models.DateField(
         verbose_name="Sana",
-        help_text="Chiqim amalga oshirilgan sana"
+        help_text="Chiqim amalga oshirilgan sana",
+        default=timezone.now
     )
     created_by = models.ForeignKey(
         User,
@@ -130,6 +199,12 @@ class Expense(models.Model):
         related_name='expenses',
         verbose_name="Kim tomonidan",
         help_text="Chiqimni kim qo'shgan"
+    )
+    image = models.ImageField(
+        upload_to='expenses/', 
+        null=True, 
+        blank=True, 
+        verbose_name="Rasm"
     )
     created_at = models.DateTimeField(
         auto_now_add=True,

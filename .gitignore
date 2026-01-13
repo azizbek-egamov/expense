@@ -3,5 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 venv/
-frontend/
 tz.md
+frontend/.next
+frontend/package-lock.json
+frontend/node_modules

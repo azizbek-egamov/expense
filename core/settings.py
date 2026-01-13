@@ -198,4 +198,3 @@ API JWT (JSON Web Token) asosida himoyalangan. Token olish uchun `/api/token/` e
         {'name': 'Foydalanuvchilar', 'description': 'Foydalanuvchilar boshqaruvi'},
     ],
 }
-
