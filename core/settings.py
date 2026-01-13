@@ -188,6 +188,8 @@ API JWT (JSON Web Token) asosida himoyalangan. Token olish uchun `/api/token/` e
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
+    # Production uchun warninglarni o'chirish (I/O error oldini olish)
+    'DISABLE_ERRORS_AND_WARNINGS': True,
     'TAGS': [
         {'name': 'Autentifikatsiya', 'description': 'Tizimga kirish va token olish'},
         {'name': 'Binolar', 'description': 'Binolar bilan ishlash (CRUD)'},
@@ -196,3 +198,4 @@ API JWT (JSON Web Token) asosida himoyalangan. Token olish uchun `/api/token/` e
         {'name': 'Foydalanuvchilar', 'description': 'Foydalanuvchilar boshqaruvi'},
     ],
 }
+
